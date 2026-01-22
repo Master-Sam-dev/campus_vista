@@ -4,6 +4,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 
+// Constants
 const GRAVITY = -30;
 const PLAYER_HEIGHT = 1.5;
 const MOVE_SPEED = 8;
@@ -11,7 +12,7 @@ const SPRINT_MULT = 2.25;
 const JUMP_POWER = 10;
 const DOOR_DISTANCE = 2.2;
 
-/* Manual point targets */
+// Default navigation points
 const NAV_TARGETS = [
   { label: "Gate", position: new THREE.Vector3(5, 0, 10) },
   { label: "Parking Area", position: new THREE.Vector3(-8, 0, 4) },
@@ -20,13 +21,11 @@ const NAV_TARGETS = [
   { label: "Emergency Exit", position: new THREE.Vector3(0, 0, -15) },
 ];
 
-const formatName = name =>
+// Utility: clean mesh names for labels
+const formatName = (name) =>
   name.replace(/[_\-]/g, " ").replace(/\d+/g, "").replace(/\s+/g, " ").trim();
 
-export default function ThreeDViewer({
-  // ✅ GitHub Pages safe path
-  modelUrl = "/campus-vista/input.glb",
-}) {
+export default function ThreeDViewer({ modelUrl = "/input.glb" }) {
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
 
@@ -43,16 +42,16 @@ export default function ThreeDViewer({
     const mount = mountRef.current;
     if (!mount) return;
 
-    /* ================= SCENE ================= */
+    // ================= SCENE =================
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0b1220); // ✅ not pure black
+    scene.background = new THREE.Color(0x20232a); // subtle dark background for GitHub Pages
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
       0.1,
-      1500
+      1000
     );
 
     const renderer = new THREE.WebGLRenderer({
@@ -62,22 +61,20 @@ export default function ThreeDViewer({
 
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = false;
     mount.appendChild(renderer.domElement);
 
-    /* ================= LIGHTING (FIXED) ================= */
-    scene.add(new THREE.AmbientLight(0xffffff, 2.5));
-
-    const dirLight = new THREE.DirectionalLight(0xffffff, 4);
-    dirLight.position.set(20, 40, 20);
+    // Lights
+    scene.add(new THREE.AmbientLight(0xffffff, 1));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+    dirLight.position.set(10, 20, 10);
     scene.add(dirLight);
 
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
-    scene.add(hemi);
-
-    /* ================= CONTROLS ================= */
+    // Controls
     const controls = new PointerLockControls(camera, renderer.domElement);
     const player = { velocity: new THREE.Vector3(), onGround: false };
 
+    // ================= RAYCASTER =================
     const raycaster = new THREE.Raycaster();
     const down = new THREE.Vector3(0, -1, 0);
     const groundMeshes = [];
@@ -86,7 +83,7 @@ export default function ThreeDViewer({
     const checkGround = () => {
       raycaster.set(camera.position, down);
       const hits = raycaster.intersectObjects(groundMeshes, false);
-      const hit = hits.find(h => h.distance <= PLAYER_HEIGHT + 0.3);
+      const hit = hits.find((h) => h.distance <= PLAYER_HEIGHT + 0.3);
       if (hit) {
         player.onGround = true;
         player.velocity.y = Math.max(0, player.velocity.y);
@@ -97,18 +94,17 @@ export default function ThreeDViewer({
     };
 
     const checkDoors = () => {
-      doors.forEach(d => {
+      doors.forEach((d) => {
         d.userData.near =
           d.position.distanceTo(camera.position) < DOOR_DISTANCE &&
           !d.userData.opened;
       });
     };
 
-    /* ================= LOADER ================= */
+    // ================= LOADER =================
     const manager = new THREE.LoadingManager();
     manager.onError = () => {
-      console.error("❌ GLB LOAD FAILED:", modelUrl);
-      setError("Model failed to load. Check GitHub Pages path.");
+      setError("Model failed to load. Check network or file path.");
       setLoading(false);
     };
 
@@ -121,75 +117,78 @@ export default function ThreeDViewer({
 
     loader.load(
       modelUrl,
-      gltf => {
+      (gltf) => {
+        gltf.scene.traverse((obj) => {
+          if (obj.isMesh) {
+            obj.frustumCulled = true;
+            obj.geometry.computeBoundingSphere();
+          }
+        });
+
         scene.add(gltf.scene);
 
         const detectedTargets = [];
         const addedNames = new Set();
 
-        gltf.scene.traverse(obj => {
-          if (!obj.isMesh) return;
+        gltf.scene.traverse((child) => {
+          if (!child.isMesh) return;
+          groundMeshes.push(child);
 
-          groundMeshes.push(obj);
-
-          if (obj.name.toLowerCase().includes("door")) {
-            obj.userData.opened = false;
-            obj.userData.near = false;
-            doors.push(obj);
+          if (child.name.toLowerCase().includes("door")) {
+            child.userData.opened = false;
+            child.userData.near = false;
+            doors.push(child);
           }
 
-          const label = formatName(obj.name);
-          if (label && !addedNames.has(label)) {
-            detectedTargets.push({ label, type: "mesh", ref: obj });
-            addedNames.add(label);
+          if (child.name && child.name.length > 2) {
+            const label = formatName(child.name);
+            if (!addedNames.has(label)) {
+              detectedTargets.push({ label, type: "mesh", ref: child });
+              addedNames.add(label);
+            }
           }
         });
 
         setNavTargets([
           ...detectedTargets,
-          ...NAV_TARGETS.map(t => ({
+          ...NAV_TARGETS.map((t) => ({
             label: t.label,
             type: "point",
             position: t.position,
           })),
         ]);
 
+        // Camera starting position
         const box = new THREE.Box3().setFromObject(gltf.scene);
         const center = box.getCenter(new THREE.Vector3());
         const size = box.getSize(new THREE.Vector3());
-
-        camera.position.set(
-          center.x,
-          box.min.y + PLAYER_HEIGHT,
-          center.z + size.z * 0.3
-        );
+        camera.position.set(center.x, box.min.y + PLAYER_HEIGHT, center.z + size.z * 0.3);
         camera.lookAt(center);
 
         setLoading(false);
       }
     );
 
-    /* ================= INPUT ================= */
+    // ================= INPUT =================
     const keys = {};
-    const downHandler = e => {
+    const downHandler = (e) => {
       keys[e.code] = true;
-      if (e.code === "Space" && player.onGround)
-        player.velocity.y = JUMP_POWER;
+      if (e.code === "Space" && player.onGround) player.velocity.y = JUMP_POWER;
       if (e.code === "KeyE")
-        doors.forEach(d => {
+        doors.forEach((d) => {
           if (d.userData.near) {
             d.rotation.y -= Math.PI / 2;
             d.userData.opened = true;
           }
         });
     };
-    const upHandler = e => (keys[e.code] = false);
+    const upHandler = (e) => (keys[e.code] = false);
 
     document.addEventListener("keydown", downHandler);
     document.addEventListener("keyup", upHandler);
     renderer.domElement.addEventListener("click", () => controls.lock());
 
-    /* ================= NAV LINE ================= */
+    // ================= NAVIGATION LINE =================
     const navGeometry = new THREE.BufferGeometry();
     navGeometry.setAttribute(
       "position",
@@ -197,13 +196,44 @@ export default function ThreeDViewer({
     );
     const navLine = new THREE.Line(
       navGeometry,
-      new THREE.LineBasicMaterial({ color: 0xff4444 })
+      new THREE.LineBasicMaterial({ color: 0xff4444, depthTest: false })
     );
+    navLine.renderOrder = 999;
     scene.add(navLine);
 
-    /* ================= LOOP ================= */
+    // ================= HUD =================
+    const indicator = new THREE.Group();
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.18, 0.24, 32),
+      new THREE.MeshBasicMaterial({
+        color: 0x00e0ff,
+        transparent: true,
+        opacity: 0.75,
+        side: THREE.DoubleSide,
+      })
+    );
+    ring.rotation.x = Math.PI / 2;
+
+    const arrow = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.14, 0.22),
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.95,
+        side: THREE.DoubleSide,
+      })
+    );
+    arrow.position.z = 0.18;
+    arrow.rotation.x = -Math.PI / 2;
+
+    indicator.add(ring, arrow);
+    indicator.visible = false;
+    scene.add(indicator);
+
+    // ================= ANIMATION LOOP =================
     const clock = new THREE.Clock();
     let groundTimer = 0;
+    let smoothRotation = 0;
 
     const animate = () => {
       requestAnimationFrame(animate);
@@ -227,6 +257,40 @@ export default function ThreeDViewer({
         }
       }
 
+      if (activeTargetRef.current) {
+        activeTargetRef.current.getWorldPosition(targetWorldPosRef.current);
+
+        const start = camera.position.clone();
+        const end = targetWorldPosRef.current.clone();
+        end.y = start.y;
+
+        navGeometry.attributes.position.array.set([
+          start.x,
+          start.y,
+          start.z,
+          end.x,
+          end.y,
+          end.z,
+        ]);
+        navGeometry.attributes.position.needsUpdate = true;
+
+        indicator.visible = true;
+
+        const forward = new THREE.Vector3();
+        camera.getWorldDirection(forward);
+        indicator.position.copy(camera.position).add(forward.multiplyScalar(1.4));
+        indicator.position.y += 0.25;
+
+        const dir = new THREE.Vector3()
+          .subVectors(targetWorldPosRef.current, camera.position)
+          .normalize();
+        const targetAngle = Math.atan2(dir.x, dir.z);
+        smoothRotation = THREE.MathUtils.lerp(smoothRotation, targetAngle, 0.08);
+        indicator.rotation.y = smoothRotation;
+      } else {
+        indicator.visible = false;
+      }
+
       renderer.render(scene, camera);
     };
 
@@ -237,7 +301,6 @@ export default function ThreeDViewer({
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     };
-
     window.addEventListener("resize", onResize);
 
     return () => {
@@ -250,22 +313,70 @@ export default function ThreeDViewer({
     };
   }, [modelUrl]);
 
+  // ================= NAVIGATION SELECT =================
+  const handleSelect = (e) => {
+    const value = e.target.value;
+    setSelectedTarget(value);
+    const target = navTargets.find((t) => t.label === value);
+
+    if (!target) {
+      activeTargetRef.current = null;
+      return;
+    }
+
+    if (target.type === "mesh") {
+      activeTargetRef.current = target.ref;
+    } else {
+      if (!dummyPointRef.current) {
+        dummyPointRef.current = new THREE.Object3D();
+        sceneRef.current.add(dummyPointRef.current);
+      }
+      dummyPointRef.current.position.copy(target.position);
+      dummyPointRef.current.position.y += PLAYER_HEIGHT;
+      dummyPointRef.current.updateMatrixWorld(true);
+      activeTargetRef.current = dummyPointRef.current;
+    }
+  };
+
   return (
     <div ref={mountRef} style={{ width: "100vw", height: "100vh" }}>
-      {loading && <div style={overlayStyle}>Loading Campus…</div>}
+      {loading && <div style={overlayStyle}>Loading Building…</div>}
       {error && <div style={{ ...overlayStyle, color: "red" }}>{error}</div>}
+
+      <select value={selectedTarget} onChange={handleSelect} style={selectStyle}>
+        <option value="">Select Destination</option>
+        {navTargets.map((t) => (
+          <option key={t.label} value={t.label}>
+            {t.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
 
+// ================= STYLES =================
 const overlayStyle = {
   position: "absolute",
   inset: 0,
-  background: "rgba(0,0,0,0.85)",
+  background: "#000",
   color: "#fff",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  fontSize: "32px",
+  fontSize: "42px",
   zIndex: 10,
+};
+
+const selectStyle = {
+  position: "absolute",
+  top: "20px",
+  left: "50%",
+  transform: "translateX(-50%)",
+  padding: "10px 14px",
+  fontSize: "16px",
+  borderRadius: "8px",
+  border: "none",
+  outline: "none",
+  zIndex: 20,
 };
