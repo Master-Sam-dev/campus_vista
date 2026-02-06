@@ -6,11 +6,12 @@ import { PointerLockControls } from "three/addons/controls/PointerLockControls.j
 
 /* ================= CONSTANTS ================= */
 const PLAYER_HEIGHT = 1.5;
-const MOVE_SPEED = 8;
+const MOVE_SPEED = 4.5;
 const SPRINT_MULT = 2.25;
 const GRAVITY = -30;
 const JUMP_POWER = 10;
 const FLOOR_EPSILON = 0.05;
+const STEP_HEIGHT = 0.5;
 
 const NAV_TARGETS = [
   { label: "Gate", position: new THREE.Vector3(5, 0, 10) },
@@ -58,37 +59,79 @@ export default function ThreeDViewer({ modelUrl = "input.glb" }) {
     const controls = new PointerLockControls(camera, renderer.domElement);
 
     /* ================= PLAYER STATE ================= */
-    const velocityY = { value: 0 };
+    const velocity = new THREE.Vector3(); // x,y,z velocity
     let onGround = false;
     let lastSafeY = 0;
 
     const raycaster = new THREE.Raycaster();
     const groundMeshes = [];
 
-    const snapToGround = () => {
-      raycaster.set(camera.position, new THREE.Vector3(0, -1, 0));
-      const hits = raycaster.intersectObjects(groundMeshes, false);
+/* ============== NATURAL FLOOR & STAIRS PHYSICS (UP + DOWN FIX) ============= */
+const updatePlayerPhysics = (delta) => {
+  // Apply gravity
+  velocity.y += GRAVITY * delta;
 
-      if (hits.length) {
-        const y = hits[0].point.y + PLAYER_HEIGHT;
-        if (camera.position.y <= y + FLOOR_EPSILON) {
-          camera.position.y = y;
-          velocityY.value = 0;
-          onGround = true;
-          lastSafeY = y;
-          return;
-        }
-      }
+  // Compute horizontal movement
+  const moveDir = new THREE.Vector3();
+  if (!mobileMode && controls.isLocked) {
+    moveDir.x = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+    moveDir.z = (keys.KeyS ? 1 : 0) - (keys.KeyW ? 1 : 0);
+  } else if (mobileMode) {
+    moveDir.x = mobileInput.right;
+    moveDir.z = mobileInput.forward;
+  }
 
-      camera.position.y = lastSafeY;
-      velocityY.value = 0;
-      onGround = true;
-    };
+  if (moveDir.lengthSq()) moveDir.normalize().applyEuler(camera.rotation);
+
+  // Predict next horizontal position
+  const nextPos = camera.position.clone();
+  nextPos.addScaledVector(moveDir, MOVE_SPEED * delta);
+
+  // Raycast downward from current + next horizontal position
+  const rayOrigin = nextPos.clone();
+  rayOrigin.y += PLAYER_HEIGHT; // cast from player height
+  raycaster.set(rayOrigin, new THREE.Vector3(0, -1, 0));
+  const hits = raycaster.intersectObjects(groundMeshes, false);
+
+  let groundY = lastSafeY;
+
+  if (hits.length) {
+    const hitY = hits[0].point.y + PLAYER_HEIGHT;
+
+    // Step up if the ground is slightly higher
+    if (hitY - camera.position.y <= STEP_HEIGHT) {
+      groundY = hitY;
+    }
+    // Step down if the ground is slightly lower
+    else if (camera.position.y - hitY <= STEP_HEIGHT * 2) {
+      groundY = hitY;
+    }
+  }
+
+  // Apply vertical velocity
+  nextPos.y += velocity.y * delta;
+
+  // Stick to ground if landing or stepping
+  if (nextPos.y <= groundY) {
+    nextPos.y = groundY;
+    velocity.y = 0;
+    onGround = true;
+    lastSafeY = nextPos.y;
+  } else {
+    onGround = false;
+  }
+
+  camera.position.copy(nextPos);
+};
+
+
 
     /* ================= LOAD MODEL ================= */
     const loader = new GLTFLoader();
     const draco = new DRACOLoader();
-    draco.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.7/");
+    draco.setDecoderPath(
+      "https://www.gstatic.com/draco/versioned/decoders/1.5.7/"
+    );
     loader.setDRACOLoader(draco);
 
     loader.load(
@@ -114,7 +157,11 @@ export default function ThreeDViewer({ modelUrl = "input.glb" }) {
 
         setNavTargets([
           ...targets,
-          ...NAV_TARGETS.map((p) => ({ label: p.label, type: "point", position: p.position })),
+          ...NAV_TARGETS.map((p) => ({
+            label: p.label,
+            type: "point",
+            position: p.position,
+          })),
         ]);
 
         // Spawn inside building
@@ -138,7 +185,7 @@ export default function ThreeDViewer({ modelUrl = "input.glb" }) {
       if (!mobileMode) {
         keys[e.code] = true;
         if (e.code === "Space" && onGround) {
-          velocityY.value = JUMP_POWER;
+          velocity.y = JUMP_POWER;
           onGround = false;
         }
       }
@@ -234,36 +281,32 @@ export default function ThreeDViewer({ modelUrl = "input.glb" }) {
 
     /* ================= ADVANCED 3D AI NAVIGATOR ================= */
     const hud = new THREE.Group();
-
-    // Blue flat plate
     const glowMaterial = new THREE.MeshBasicMaterial({
       color: 0x00aaff,
       transparent: true,
       opacity: 0.85,
       side: THREE.DoubleSide,
     });
-
     const pulseRing = new THREE.Mesh(
       new THREE.RingGeometry(0.04, 0.065, 48),
       glowMaterial
     );
-    pulseRing.rotation.x = -Math.PI / 2; // flat forward
+    pulseRing.rotation.x = -Math.PI / 2;
     hud.add(pulseRing);
 
-    // Attractive 3D arrow inside circle
     const arrowGeometry = new THREE.ConeGeometry(0.015, 0.045, 16);
     const arrowMesh = new THREE.Mesh(
       arrowGeometry,
       new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.4 })
     );
-    arrowMesh.rotation.x = Math.PI / 2; // lean forward
-    arrowMesh.position.z = 0.05; // slightly above plate
+    arrowMesh.rotation.x = Math.PI / 2;
+    arrowMesh.position.z = 0.05;
     hud.add(arrowMesh);
 
     hud.visible = false;
 
     camera.add(hud);
-    hud.position.set(0, -0.12, -0.75); // in front of eyes
+    hud.position.set(0, -0.12, -0.75);
     scene.add(camera);
 
     let pulseTime = 0;
@@ -293,11 +336,10 @@ export default function ThreeDViewer({ modelUrl = "input.glb" }) {
         camera.position.addScaledVector(dir, MOVE_SPEED * delta);
       }
 
-      velocityY.value += GRAVITY * delta;
-      camera.position.y += velocityY.value * delta;
-      snapToGround();
+      // Physics update
+      updatePlayerPhysics(delta);
 
-      // Update AI navigator
+      // AI navigator
       if (selectedTarget) {
         const t = navTargets.find((n) => n.label === selectedTarget);
         if (t) {
@@ -308,17 +350,14 @@ export default function ThreeDViewer({ modelUrl = "input.glb" }) {
           const invQuat = camera.quaternion.clone().invert();
           const localDir = dir.clone().applyQuaternion(invQuat);
 
-          // Rotate HUD circle toward target
           const targetAngle = Math.atan2(localDir.x, localDir.z);
-          hud.rotation.y += (targetAngle - hud.rotation.y) * 0.1; // smooth rotation
+          hud.rotation.y += (targetAngle - hud.rotation.y) * 0.1;
 
-          // Arrow pulse / scale
           const dist = camera.position.distanceTo(targetPos);
           pulseTime += delta * 4;
           const scale = THREE.MathUtils.clamp(0.9 - dist * 0.01, 0.7, 0.9);
           arrowMesh.scale.setScalar(scale + Math.sin(pulseTime) * 0.03);
 
-          // Glow color by distance
           glowMaterial.color.set(dist < 3 ? 0x00ff99 : dist < 8 ? 0x00ffaa : 0x00aaff);
 
           hud.visible = true;
