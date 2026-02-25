@@ -13,7 +13,7 @@ function Loader() {
         borderRadius: '10px', border: '2px solid #00ffcc', 
         boxShadow: '0 0 20px #00ffcc', textAlign: 'center', minWidth: '200px' 
       }}>
-        <h3 style={{ margin: '0 0 10px 0' }}>UNIVERSITY OF <LARKANO></LARKANO></h3>
+        <h3 style={{ margin: '0 0 10px 0' }}>UNIVERSITY OF LARKANO</h3>
         <b>Loading: {progress.toFixed(0)}%</b>
       </div>
     </Html>
@@ -22,7 +22,7 @@ function Loader() {
 
 // --- 2. University Model Loader ---
 function UniversityModel({ setModelScene }) {
-  const { nodes, materials } = useGLTF('./final.glb?v=' + Date.now());
+  const { scene } = useGLTF('./Final.glb')
   useEffect(() => { 
     if (scene) {
       scene.updateMatrixWorld(true)
