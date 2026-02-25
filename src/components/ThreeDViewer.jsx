@@ -1,441 +1,258 @@
-import React, { useEffect, useRef, useState } from "react";
-import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
-import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
-
-/* ================= CONSTANTS ================= */
-const PLAYER_HEIGHT = 1.5;
-const MOVE_SPEED = 4.5;
-const SPRINT_MULT = 2.25;
-const GRAVITY = -30;
-const JUMP_POWER = 10;
-const FLOOR_EPSILON = 0.05;
-const STEP_HEIGHT = 0.5;
-
-const NAV_TARGETS = [
-  { label: "Gate", position: new THREE.Vector3(5, 0, 10) },
-  { label: "Parking Area", position: new THREE.Vector3(-8, 0, 4) },
-  { label: "Cafeteria", position: new THREE.Vector3(12, 0, -6) },
-  { label: "Security Office", position: new THREE.Vector3(-12, 0, -3) },
-  { label: "Emergency Exit", position: new THREE.Vector3(0, 0, -15) },
-];
-
-const formatName = (n) =>
-  n.replace(/[_\-]/g, " ").replace(/\d+/g, "").replace(/\s+/g, " ").trim();
-
-export default function ThreeDViewer({ modelUrl = "input.glb" }) {
-  const mountRef = useRef(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [navTargets, setNavTargets] = useState([]);
-  const [selectedTarget, setSelectedTarget] = useState("");
-  const [mobileMode, setMobileMode] = useState(false);
-
-  useEffect(() => {
-    const mount = mountRef.current;
-    if (!mount) return;
-
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x20232a);
-
-    const camera = new THREE.PerspectiveCamera(
-      75,
-      window.innerWidth / window.innerHeight,
-      0.1,
-      1000
-    );
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    mount.appendChild(renderer.domElement);
-
-    const sun = new THREE.DirectionalLight(0xffffff, 2);
-    sun.position.set(10, 20, 10);
-    scene.add(new THREE.AmbientLight(0xffffff, 1));
-    scene.add(sun);
-
-    const controls = new PointerLockControls(camera, renderer.domElement);
-
-    /* ================= PLAYER STATE ================= */
-    const velocity = new THREE.Vector3(); // x,y,z velocity
-    let onGround = false;
-    let lastSafeY = 0;
-
-    const raycaster = new THREE.Raycaster();
-    const groundMeshes = [];
-
-/* ============== NATURAL FLOOR & STAIRS PHYSICS (UP + DOWN FIX) ============= */
-const updatePlayerPhysics = (delta) => {
-  // Apply gravity
-  velocity.y += GRAVITY * delta;
-
-  // Compute horizontal movement
-  const moveDir = new THREE.Vector3();
-  if (!mobileMode && controls.isLocked) {
-    moveDir.x = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
-    moveDir.z = (keys.KeyS ? 1 : 0) - (keys.KeyW ? 1 : 0);
-  } else if (mobileMode) {
-    moveDir.x = mobileInput.right;
-    moveDir.z = mobileInput.forward;
-  }
-
-  if (moveDir.lengthSq()) moveDir.normalize().applyEuler(camera.rotation);
-
-  // Predict next horizontal position
-  const nextPos = camera.position.clone();
-  nextPos.addScaledVector(moveDir, MOVE_SPEED * delta);
-
-  // Raycast downward from current + next horizontal position
-  const rayOrigin = nextPos.clone();
-  rayOrigin.y += PLAYER_HEIGHT; // cast from player height
-  raycaster.set(rayOrigin, new THREE.Vector3(0, -1, 0));
-  const hits = raycaster.intersectObjects(groundMeshes, false);
-
-  let groundY = lastSafeY;
-
-  if (hits.length) {
-    const hitY = hits[0].point.y + PLAYER_HEIGHT;
-
-    // Step up if the ground is slightly higher
-    if (hitY - camera.position.y <= STEP_HEIGHT) {
-      groundY = hitY;
-    }
-    // Step down if the ground is slightly lower
-    else if (camera.position.y - hitY <= STEP_HEIGHT * 2) {
-      groundY = hitY;
-    }
-  }
-
-  // Apply vertical velocity
-  nextPos.y += velocity.y * delta;
-
-  // Stick to ground if landing or stepping
-  if (nextPos.y <= groundY) {
-    nextPos.y = groundY;
-    velocity.y = 0;
-    onGround = true;
-    lastSafeY = nextPos.y;
-  } else {
-    onGround = false;
-  }
-
-  camera.position.copy(nextPos);
-};
-
-
-
-    /* ================= LOAD MODEL ================= */
-    const loader = new GLTFLoader();
-    const draco = new DRACOLoader();
-    draco.setDecoderPath(
-      "https://www.gstatic.com/draco/versioned/decoders/1.5.7/"
-    );
-    loader.setDRACOLoader(draco);
-
-    loader.load(
-      import.meta.env.BASE_URL + modelUrl,
-      (gltf) => {
-        scene.add(gltf.scene);
-
-        const targets = [];
-        const used = new Set();
-
-        gltf.scene.traverse((m) => {
-          if (!m.isMesh) return;
-          groundMeshes.push(m);
-
-          if (m.name) {
-            const label = formatName(m.name);
-            if (label && !used.has(label)) {
-              used.add(label);
-              targets.push({ label, type: "mesh", ref: m });
-            }
-          }
-        });
-
-        setNavTargets([
-          ...targets,
-          ...NAV_TARGETS.map((p) => ({
-            label: p.label,
-            type: "point",
-            position: p.position,
-          })),
-        ]);
-
-        // Spawn inside building
-        const bounds = new THREE.Box3().setFromObject(gltf.scene);
-        const center = bounds.getCenter(new THREE.Vector3());
-        camera.position.set(center.x, bounds.min.y + PLAYER_HEIGHT, center.z);
-        lastSafeY = camera.position.y;
-
-        setLoading(false);
-      },
-      undefined,
-      () => {
-        setError("Model failed to load");
-        setLoading(false);
-      }
-    );
-
-    /* ================= INPUT ================= */
-    const keys = {};
-    document.addEventListener("keydown", (e) => {
-      if (!mobileMode) {
-        keys[e.code] = true;
-        if (e.code === "Space" && onGround) {
-          velocity.y = JUMP_POWER;
-          onGround = false;
-        }
-      }
-    });
-    document.addEventListener("keyup", (e) => (keys[e.code] = false));
-    renderer.domElement.addEventListener("click", () => !mobileMode && controls.lock());
-
-    /* ================= MOBILE JOYSTICK ================= */
-    const mobileInput = { forward: 0, right: 0 };
-    const joystickOuter = document.createElement("div");
-    const joystickInner = document.createElement("div");
-
-    joystickOuter.style.position = "absolute";
-    joystickOuter.style.width = "100px";
-    joystickOuter.style.height = "100px";
-    joystickOuter.style.borderRadius = "50%";
-    joystickOuter.style.background = "rgba(0,0,0,0.25)";
-    joystickOuter.style.left = "40px";
-    joystickOuter.style.bottom = "40px";
-    joystickOuter.style.zIndex = 100;
-    joystickOuter.style.touchAction = "none";
-
-    joystickInner.style.position = "absolute";
-    joystickInner.style.width = "50px";
-    joystickInner.style.height = "50px";
-    joystickInner.style.borderRadius = "50%";
-    joystickInner.style.background = "rgba(255,255,255,0.75)";
-    joystickInner.style.left = "25px";
-    joystickInner.style.top = "25px";
-    joystickInner.style.boxShadow = "0 0 10px rgba(0,0,0,0.5)";
-
-    joystickOuter.appendChild(joystickInner);
-    mount.appendChild(joystickOuter);
-    joystickOuter.style.display = mobileMode ? "block" : "none";
-
-    let joystickStart = null;
-    let joystickActive = false;
-
-    const joystickMove = (touch) => {
-      if (!joystickActive) return;
-      const dx = touch.clientX - joystickStart.x;
-      const dy = touch.clientY - joystickStart.y;
-      const maxDist = 40;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const angle = Math.atan2(dy, dx);
-      const clampedDist = Math.min(dist, maxDist);
-      joystickInner.style.transform = `translate(${clampedDist * Math.cos(angle)}px, ${clampedDist * Math.sin(angle)}px)`;
-      mobileInput.right = (clampedDist * Math.cos(angle)) / maxDist;
-      mobileInput.forward = (clampedDist * Math.sin(angle)) / maxDist;
-    };
-
-    joystickOuter.addEventListener("touchstart", (e) => {
-      joystickActive = true;
-      const rect = joystickOuter.getBoundingClientRect();
-      joystickStart = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-      joystickMove(e.touches[0]);
-    });
-
-    window.addEventListener("touchmove", (e) => {
-      if (!joystickActive) return;
-      joystickMove(e.touches[0]);
-    });
-
-    window.addEventListener("touchend", () => {
-      joystickActive = false;
-      joystickInner.style.transform = "translate(0px,0px)";
-      mobileInput.forward = 0;
-      mobileInput.right = 0;
-    });
-
-    // Mobile camera rotate
-    let rotateActive = false;
-    let rotateStart = { x: 0, y: 0 };
-    window.addEventListener("touchstart", (e) => {
-      if (!mobileMode) return;
-      if (e.target !== joystickInner && e.target !== joystickOuter && e.touches.length === 1) {
-        rotateActive = true;
-        rotateStart.x = e.touches[0].clientX;
-        rotateStart.y = e.touches[0].clientY;
-      }
-    });
-    window.addEventListener("touchmove", (e) => {
-      if (!rotateActive || e.touches.length !== 1) return;
-      const dx = e.touches[0].clientX - rotateStart.x;
-      const dy = e.touches[0].clientY - rotateStart.y;
-      camera.rotation.y -= dx * 0.005;
-      camera.rotation.x -= dy * 0.005;
-      camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
-      rotateStart.x = e.touches[0].clientX;
-      rotateStart.y = e.touches[0].clientY;
-    });
-    window.addEventListener("touchend", () => (rotateActive = false));
-
-    /* ================= ADVANCED 3D AI NAVIGATOR ================= */
-    const hud = new THREE.Group();
-    const glowMaterial = new THREE.MeshBasicMaterial({
-      color: 0x00aaff,
-      transparent: true,
-      opacity: 0.85,
-      side: THREE.DoubleSide,
-    });
-    const pulseRing = new THREE.Mesh(
-      new THREE.RingGeometry(0.04, 0.065, 48),
-      glowMaterial
-    );
-    pulseRing.rotation.x = -Math.PI / 2;
-    hud.add(pulseRing);
-
-    const arrowGeometry = new THREE.ConeGeometry(0.015, 0.045, 16);
-    const arrowMesh = new THREE.Mesh(
-      arrowGeometry,
-      new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.4 })
-    );
-    arrowMesh.rotation.x = Math.PI / 2;
-    arrowMesh.position.z = 0.05;
-    hud.add(arrowMesh);
-
-    hud.visible = false;
-
-    camera.add(hud);
-    hud.position.set(0, -0.12, -0.75);
-    scene.add(camera);
-
-    let pulseTime = 0;
-    const clock = new THREE.Clock();
-
-    const animate = () => {
-      requestAnimationFrame(animate);
-      const delta = clock.getDelta();
-
-      // Desktop movement
-      if (!mobileMode && controls.isLocked) {
-        const speed = (keys.ShiftLeft ? MOVE_SPEED * SPRINT_MULT : MOVE_SPEED) * delta;
-        const dir = new THREE.Vector3(
-          (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0),
-          0,
-          (keys.KeyS ? 1 : 0) - (keys.KeyW ? 1 : 0)
-        );
-        if (dir.lengthSq()) {
-          dir.normalize().applyEuler(camera.rotation);
-          camera.position.addScaledVector(dir, speed);
-        }
-      }
-
-      // Mobile movement
-      if (mobileMode) {
-        const dir = new THREE.Vector3(mobileInput.right, 0, mobileInput.forward).applyEuler(camera.rotation);
-        camera.position.addScaledVector(dir, MOVE_SPEED * delta);
-      }
-
-      // Physics update
-      updatePlayerPhysics(delta);
-
-      // AI navigator
-      if (selectedTarget) {
-        const t = navTargets.find((n) => n.label === selectedTarget);
-        if (t) {
-          const targetPos =
-            t.type === "mesh" ? t.ref.getWorldPosition(new THREE.Vector3()) : t.position;
-
-          const dir = targetPos.clone().sub(camera.position).normalize();
-          const invQuat = camera.quaternion.clone().invert();
-          const localDir = dir.clone().applyQuaternion(invQuat);
-
-          const targetAngle = Math.atan2(localDir.x, localDir.z);
-          hud.rotation.y += (targetAngle - hud.rotation.y) * 0.1;
-
-          const dist = camera.position.distanceTo(targetPos);
-          pulseTime += delta * 4;
-          const scale = THREE.MathUtils.clamp(0.9 - dist * 0.01, 0.7, 0.9);
-          arrowMesh.scale.setScalar(scale + Math.sin(pulseTime) * 0.03);
-
-          glowMaterial.color.set(dist < 3 ? 0x00ff99 : dist < 8 ? 0x00ffaa : 0x00aaff);
-
-          hud.visible = true;
-        }
-      } else {
-        hud.visible = false;
-      }
-
-      renderer.render(scene, camera);
-    };
-
-    animate();
-
-    window.addEventListener("resize", () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
-
-    return () => {
-      renderer.dispose();
-      scene.clear();
-      mount.removeChild(renderer.domElement);
-    };
-  }, [modelUrl, mobileMode, selectedTarget]);
-
-  return (
-    <div ref={mountRef} style={{ width: "100vw", height: "100vh" }}>
-      {loading && <div style={overlayStyle}>Loading…</div>}
-      {error && <div style={{ ...overlayStyle, color: "red" }}>{error}</div>}
-
-      <select
-        value={selectedTarget}
-        onChange={(e) => setSelectedTarget(e.target.value)}
-        style={selectStyle}
-      >
-        <option value="">Select Destination</option>
-        {navTargets.map((t) => (
-          <option key={t.label}>{t.label}</option>
-        ))}
-      </select>
-
-      <button style={modeButtonStyle} onClick={() => setMobileMode((m) => !m)}>
-        {mobileMode ? "Desktop" : "Mobile"}
-      </button>
-    </div>
-  );
+import React, { Suspense, useEffect, useState, useRef } from 'react'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { useGLTF, PointerLockControls, Html, useProgress, Environment, Sky, Float } from '@react-three/drei'
+import * as THREE from 'three'
+
+// --- 1. Custom Loader ---
+function Loader() {
+  const { progress } = useProgress()
+  return (
+    <Html center>
+      <div style={{ 
+        color: '#00ffcc', background: '#111', padding: '20px', 
+        borderRadius: '10px', border: '2px solid #00ffcc', 
+        boxShadow: '0 0 20px #00ffcc', textAlign: 'center', minWidth: '200px' 
+      }}>
+        <h3 style={{ margin: '0 0 10px 0' }}>SINDH UNIVERSITY</h3>
+        <b>Loading: {progress.toFixed(0)}%</b>
+      </div>
+    </Html>
+  )
 }
 
-/* ================= STYLES ================= */
-const overlayStyle = {
-  position: "absolute",
-  inset: 0,
-  background: "#000",
-  color: "#fff",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  fontSize: "36px",
-  zIndex: 10,
-};
+// --- 2. University Model Loader ---
+function UniversityModel({ setModelScene }) {
+  const { scene } = useGLTF('./Final.glb')
+  useEffect(() => { 
+    if (scene) {
+      scene.updateMatrixWorld(true)
+      setModelScene(scene)
+    } 
+  }, [scene, setModelScene])
+  return <primitive object={scene} />
+}
 
-const selectStyle = {
-  position: "absolute",
-  top: "20px",
-  left: "50%",
-  transform: "translateX(-50%)",
-  padding: "10px",
-  borderRadius: "8px",
-  zIndex: 20,
-};
+// --- 3. HUD Navigation Arrow (Pointer) ---
+function NavigationArrow({ targetPos }) {
+  const meshRef = useRef()
+  const { camera } = useThree()
+  useFrame(() => {
+    if (!meshRef.current || !targetPos) return
+    const dir = new THREE.Vector3().subVectors(targetPos, camera.position).normalize()
+    const localDir = dir.clone().applyQuaternion(camera.quaternion.clone().invert())
+    meshRef.current.position.set(localDir.x * 0.3, localDir.y * 0.3 - 0.1, -0.4)
+    meshRef.current.lookAt(new THREE.Vector3(localDir.x * 10, localDir.y * 10, localDir.z * 10))
+    meshRef.current.rotateX(Math.PI / 2)
+  })
+  return (
+    <mesh ref={meshRef} renderOrder={10000}>
+      <coneGeometry args={[0.015, 0.07, 12]} />
+      <meshStandardMaterial color="#00ffcc" emissive="#00ffcc" emissiveIntensity={20} depthTest={false} transparent />
+    </mesh>
+  )
+}
 
-const modeButtonStyle = {
-  position: "absolute",
-  top: "60px",
-  left: "50%",
-  transform: "translateX(-50%)",
-  padding: "10px",
-  borderRadius: "8px",
-  zIndex: 20,
-};
+// --- 4. X-RAY TARGET MARKER (Visible through walls) ---
+function TargetMarker({ targetPos }) {
+  const ringRef = useRef()
+  const beamRef = useRef()
+
+  useFrame((state) => {
+    const t = state.clock.elapsedTime
+    if (ringRef.current) {
+      ringRef.current.rotation.z = t * 2
+      ringRef.current.scale.set(1 + Math.sin(t * 3) * 0.1, 1 + Math.sin(t * 3) * 0.1, 1)
+    }
+    if (beamRef.current) {
+      beamRef.current.material.opacity = 0.3 + Math.sin(t * 4) * 0.1
+    }
+  })
+
+  if (!targetPos) return null
+
+  return (
+    <group position={[targetPos.x, targetPos.y + 0.05, targetPos.z]}>
+      {/* Dynamic Floor Ring - depthTest: false makes it visible through walls */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} ref={ringRef} renderOrder={9999}>
+        <ringGeometry args={[0.6, 0.8, 32]} />
+        <meshStandardMaterial 
+          color="#00ffcc" emissive="#00ffcc" emissiveIntensity={15} 
+          transparent opacity={0.9} depthTest={false} side={THREE.DoubleSide} 
+        />
+      </mesh>
+
+      {/* Floating Eye-Catching Diamond */}
+      <Float speed={4} rotationIntensity={1.5} floatIntensity={2}>
+        <mesh position={[0, 2, 0]} renderOrder={9999}>
+          <octahedronGeometry args={[0.6, 0]} />
+          <meshStandardMaterial 
+            color="#00ffcc" emissive="#00ffcc" emissiveIntensity={25} 
+            wireframe depthTest={false} 
+          />
+        </mesh>
+      </Float>
+
+      {/* Vertical Glow Beam (Visible from distance) */}
+      <mesh ref={beamRef} position={[0, 10, 0]} renderOrder={9998}>
+        <cylinderGeometry args={[0.1, 1, 20, 16, 1, true]} />
+        <meshStandardMaterial 
+          color="#00ffcc" emissive="#00ffcc" emissiveIntensity={10} 
+          transparent opacity={0.4} depthTest={false} depthWrite={false} 
+        />
+      </mesh>
+    </group>
+  )
+}
+
+// --- 5. Player Movement Control ---
+function Player({ scene, movement, menuOpen }) {
+  const velocity = useRef(0)
+  const isGrounded = useRef(false)
+  const playerHeight = 1.6
+
+  useFrame((state, delta) => {
+    if (menuOpen || !scene) return 
+    const { camera } = state
+    const speed = movement.shift ? 12 : 6
+    const direction = new THREE.Vector3()
+    const frontVector = new THREE.Vector3(0, 0, Number(movement.backward) - Number(movement.forward))
+    const sideVector = new THREE.Vector3(Number(movement.left) - Number(movement.right), 0, 0)
+    
+    direction.subVectors(frontVector, sideVector).normalize().applyEuler(camera.rotation).setY(0)
+    camera.position.addScaledVector(direction, speed * delta)
+
+    if (movement.jump && isGrounded.current) { velocity.current = 5.5; isGrounded.current = false; }
+    velocity.current -= 15 * delta; camera.position.y += velocity.current * delta
+
+    const raycaster = new THREE.Raycaster(camera.position, new THREE.Vector3(0, -1, 0))
+    const intersects = raycaster.intersectObjects(scene.children, true)
+    const floorY = intersects.length > 0 ? intersects[0].point.y + playerHeight : playerHeight
+
+    if (camera.position.y <= floorY) {
+      camera.position.y = floorY
+      velocity.current = 0
+      isGrounded.current = true
+    }
+  })
+  return null
+}
+
+// --- 6. Main App Component ---
+export default function ThreeDViewer() {
+  const [modelScene, setModelScene] = useState(null)
+  const [isOpen, setIsOpen] = useState(false)
+  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [targetPos, setTargetPos] = useState(null)
+  const [movement, setMovement] = useState({ forward: false, backward: false, left: false, right: false, shift: false, jump: false })
+  const controlsRef = useRef()
+
+  const locations = [
+    { label: "Auditorium", id: "auditorium" },
+    { label: "Bathroom", id: "bathroom" },
+    { label: "Class 1", id: "class 1" },
+    { label: "Class 2", id: "class 2" },
+    { label: "Class 3", id: "class 3" },
+    { label: "Class 4", id: "class 4" },
+    { label: "Class 5", id: "class 5" }
+  ]
+
+  const startNav = (index) => {
+    if (!modelScene) return
+    const searchId = locations[index].id.toLowerCase().replace(/ /g, '')
+    let target = null
+    modelScene.traverse((child) => {
+      const childName = child.name.toLowerCase().replace(/[ _]/g, '')
+      if (childName === searchId) target = child
+    })
+    if (target) {
+      const wp = new THREE.Vector3()
+      target.updateMatrixWorld(true)
+      target.getWorldPosition(wp)
+      setTargetPos(wp)
+      setIsOpen(false)
+      if (controlsRef.current) controlsRef.current.lock()
+    }
+  }
+
+  useEffect(() => {
+    const down = (e) => {
+      if (e.code === 'KeyB') setTargetPos(null)
+      if (e.code === 'KeyF') {
+        if (isOpen) { setIsOpen(false); controlsRef.current.lock(); }
+        else { setIsOpen(true); controlsRef.current.unlock(); }
+      }
+      if (!isOpen) {
+        const keys = { KeyW: 'forward', KeyS: 'backward', KeyA: 'left', KeyD: 'right', ShiftLeft: 'shift', Space: 'jump' }
+        if (keys[e.code]) setMovement(m => ({ ...m, [keys[e.code]]: true }))
+      } else {
+        if (e.code === 'ArrowDown') setSelectedIndex(s => (s + 1) % locations.length)
+        if (e.code === 'ArrowUp') setSelectedIndex(s => (s - 1 + locations.length) % locations.length)
+        if (e.code === 'Enter') startNav(selectedIndex)
+      }
+    }
+    const handleKeyUp = (e) => {
+      const keys = { KeyW: 'forward', KeyS: 'backward', KeyA: 'left', KeyD: 'right', ShiftLeft: 'shift', Space: 'jump' }
+      if (keys[e.code]) setMovement(m => ({ ...m, [keys[e.code]]: false }))
+    }
+    window.addEventListener('keydown', down); window.addEventListener('keyup', handleKeyUp)
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', handleKeyUp) }
+  }, [isOpen, selectedIndex, modelScene])
+
+  return (
+    <div style={{ width: '100vw', height: '100vh', background: '#000', position: 'relative', overflow: 'hidden', fontFamily: 'Arial, sans-serif' }}>
+      <Canvas shadows camera={{ fov: 60, position: [0, 1.6, 10] }}>
+        <Suspense fallback={<Loader />}>
+          <Sky sunPosition={[100, 20, 100]} />
+          <Environment preset="city" />
+          <ambientLight intensity={0.7} />
+          <directionalLight position={[10, 20, 10]} intensity={1.5} castShadow />
+          
+          <UniversityModel setModelScene={setModelScene} />
+          {modelScene && <Player scene={modelScene} movement={movement} menuOpen={isOpen} />}
+          
+          {targetPos && (
+            <>
+              <NavigationArrow targetPos={targetPos} />
+              <TargetMarker targetPos={targetPos} />
+            </>
+          )}
+          
+          <PointerLockControls ref={controlsRef} />
+        </Suspense>
+      </Canvas>
+
+      {/* Control Instruction UI */}
+      <div style={{ position: 'absolute', top: '20px', left: '20px', color: '#00ffcc', zIndex: 10, background: 'rgba(0,0,0,0.7)', padding: '15px', borderRadius: '8px', borderLeft: '4px solid #00ffcc' }}>
+        <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '5px' }}>CONTROLS</div>
+        WASD: Move | Shift: Run | Space: Jump <br/>
+        <b>[F]</b> Open Map | <b>[B]</b> Clear Target
+      </div>
+
+      {/* Navigation Menu Overlay */}
+      {isOpen && (
+        <div style={{ 
+          position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+          background: 'rgba(5,15,15,0.95)', padding: '35px', borderRadius: '20px', border: '2px solid #00ffcc', 
+          zIndex: 9999, minWidth: '350px', backdropFilter: 'blur(15px)', boxShadow: '0 0 30px rgba(0,255,204,0.3)'
+        }}>
+          <h2 style={{ color: '#00ffcc', textAlign: 'center', margin: '0 0 25px 0', letterSpacing: '4px', borderBottom: '1px solid #00ffcc33', paddingBottom: '10px' }}>CAMPUS NAVIGATOR</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {locations.map((loc, i) => (
+              <div key={loc.id} style={{ 
+                padding: '12px 20px', fontSize: '18px', border: '1px solid', 
+                borderColor: selectedIndex === i ? '#00ffcc' : 'rgba(0,255,204,0.1)',
+                background: selectedIndex === i ? 'rgba(0,255,204,0.15)' : 'transparent',
+                color: selectedIndex === i ? '#fff' : '#00ffcc99', borderRadius: '8px', 
+                cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+              }}>
+                <span>{loc.label}</span>
+                {selectedIndex === i && <span style={{ fontSize: '12px' }}>[ENTER]</span>}
+              </div>
+            ))}
+          </div>
+          <p style={{ color: '#00ffcc55', fontSize: '11px', marginTop: '20px', textAlign: 'center' }}>Use UP/DOWN ARROWS to select and ENTER to confirm</p>
+        </div>
+      )}
+    </div>
+  )
+}
