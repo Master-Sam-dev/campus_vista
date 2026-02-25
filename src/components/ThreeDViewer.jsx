@@ -22,7 +22,7 @@ function Loader() {
 
 // --- 2. University Model Loader ---
 function UniversityModel({ setModelScene }) {
-  const { scene } = useGLTF('https://drive.google.com/file/d/1dIOvnco9Fa9fN1InHI7gJH-7vXK8_jyH/view?usp=drive_link')
+  const { scene } = useGLTF('https://docs.google.com/uc?export=download&id=1dIOvnco9Fa9fN1InHI7gJH-7vXK8_jyH')
   useEffect(() => { 
     if (scene) {
       scene.updateMatrixWorld(true)
